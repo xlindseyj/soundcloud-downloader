@@ -1,4 +1,4 @@
-## soundcloud-downloader
+## Soundcloud Downloader
 - Docker image that automatically downloads your SoundCloud likes daily.
 
 ## Getting Started
