@@ -1,130 +1,177 @@
-## Soundcloud Downloader
-- Docker image that automatically downloads your SoundCloud likes daily.
+# SoundCloud Downloader (Docker)
 
-## Getting Started
-1. Update SoundCloud users and paths to match your system in ```docker-compose.yml``` and ```Dockerfile```
-2. ```sudo docker compose up -d --build```
+A Docker container that automatically downloads your SoundCloud library (likes, playlists, reposts, uploads, and comments) on a daily cron schedule using [scdl](https://github.com/flyingrub/scdl).
 
-## Credits
-- [scdl](https://github.com/flyingrub/scdl.git)
-- [scdl](https://github.com/xlindseyj/scdl.git)
+> **Note:** This repository is a **Docker wrapper** around the excellent [`scdl`](https://github.com/flyingrub/scdl) tool. I did not create `scdl` — full credit goes to [flyingrub](https://github.com/flyingrub) and all contributors to that project. This repo simply packages it in a container with a cron schedule that works for my setup.
 
-## Status of the project
+---
 
-As of version 3, this script is a wrapper around `yt-dlp` with some defaults/patches for backwards compatibility.
-Development is not active and new features will likely not be merged, especially if they can be covered with the
-use of `--yt-dlp-args`. Bug reports/fixes are welcome.
+## Table of Contents
+- [How It Works](#how-it-works)
+- [Prerequisites](#prerequisites)
+- [Setup](#setup)
+  - [1. SoundCloud OAuth Token](#1-soundcloud-oauth-token)
+  - [2. Customize the Dockerfile](#2-customize-the-dockerfile)
+  - [3. Customize docker-compose.yml](#3-customize-docker-composeyml)
+  - [4. Build and Run](#4-build-and-run)
+- [Cron Schedule](#cron-schedule)
+- [scdl Options Reference](#scdl-options-reference)
+- [Credits & Acknowledgements](#credits--acknowledgements)
 
-## Description
+---
 
-This script is able to download music from SoundCloud and set id3tag to the downloaded music.
-Compatible with Windows, OS X, Linux.
+## How It Works
 
-## System requirements
+When the container starts, it immediately runs an initial download of your SoundCloud likes. It then hands off to `cron`, which runs five nightly jobs to keep each category up to date:
 
-* python3
-* ffmpeg
+| Category   | Flag | Time (container TZ) |
+|------------|------|---------------------|
+| Likes      | `-f` | 12:00 AM            |
+| Playlists  | `-p` | 12:30 AM            |
+| Reposts    | `-r` | 1:00 AM             |
+| Uploads    | `-t` | 1:30 AM             |
+| Comments   | `-C` | 2:00 AM             |
 
-## Installation Instructions
-https://github.com/flyingrub/scdl/wiki/Installation-Instruction
+All downloads use `--original-art`, `--original-name`, `--original-metadata`, and the name format `{artist} - {title}` by default. The `-c` flag ensures already-downloaded tracks are skipped.
 
-# Installation
-## Dependencies
-Do not forget to install ffmpeg and to add it to your PATH.
+---
 
-## SCDL
-There are various methods for installing scdl. It is recommended to use `pipx`:
-#### Install with `pipx`
+## Prerequisites
+
+- [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/install/) installed on your host machine.
+- A SoundCloud account with an OAuth token (see below).
+- Enough disk space on the host for your music library.
+
+---
+
+## Setup
+
+### 1. SoundCloud OAuth Token
+
+`scdl` requires your SoundCloud OAuth token to access likes, playlists, and other private data.
+
+1. Log in to [SoundCloud](https://soundcloud.com) in your browser.
+2. Open the Developer Console (F12) and go to the **Application** (Chrome) or **Storage** (Firefox) tab.
+3. Under **Cookies → soundcloud.com**, find the cookie named `oauth_token` and copy its value.
+4. Create (or edit) the scdl config file on your host machine:
+   - **Mac/Linux:** `~/.config/scdl/scdl.cfg`
+   - **Windows:** `C:\Users\<username>\.config\scdl\scdl.cfg`
+
+   The file should contain:
+   ```ini
+   [DEFAULT]
+   oauth_token=YOUR_OAUTH_TOKEN_HERE
+   ```
+
+This config directory is mounted into the container via `docker-compose.yml`, so the container will automatically use your token.
+
+---
+
+### 2. Customize the Dockerfile
+
+The `Dockerfile` is pre-configured for my own SoundCloud username (`jake_lindsey`). **You must replace it with your own username and desired folder structure.**
+
+Open `Dockerfile` and update the following lines:
+
+```dockerfile
+# Replace 'jake_lindsey' with your SoundCloud username (or any folder name you prefer)
+RUN mkdir -p /Music/SoundCloud/jake_lindsey/Likes \
+    && mkdir -p /Music/SoundCloud/jake_lindsey/Playlists \
+    && mkdir -p /Music/SoundCloud/jake_lindsey/Reposts \
+    && mkdir -p /Music/SoundCloud/jake_lindsey/Uploads \
+    && mkdir -p /Music/SoundCloud/jake_lindsey/Comments
+```
+
+Also update the cron jobs and the `CMD` line at the bottom of the Dockerfile — replace every occurrence of `jake_lindsey` (in both the folder paths and the SoundCloud URL `https://soundcloud.com/jake_lindsey`) with your own username.
+
+**Example — if your SoundCloud username is `your_username`:**
+
+```dockerfile
+RUN mkdir -p /Music/SoundCloud/your_username/Likes \
+    && mkdir -p /Music/SoundCloud/your_username/Playlists \
+    ...
+
+# In the cron job block, replace all occurrences of:
+#   jake_lindsey  →  your_username
+
+CMD ["sh", "-c", "scdl -f -c --original-art --original-name --original-metadata \
+    --name-format '{artist} - {title}' \
+    -l https://soundcloud.com/your_username \
+    --path /Music/SoundCloud/your_username/Likes && cron -f"]
+```
+
+---
+
+### 3. Customize docker-compose.yml
+
+Open `docker-compose.yml` and update the volume mount to point to a directory on your host where you want music saved:
+
+```yaml
+volumes:
+  # Left side  = host path (your machine)
+  # Right side = container path (must match paths in Dockerfile)
+  - /your/host/music/path:/Music/SoundCloud/your_username
+  - ~/.config/scdl:/root/.config/scdl
+```
+
+The `~/.config/scdl` mount provides the container with your OAuth token automatically.
+
+**Example:**
+```yaml
+volumes:
+  - /home/alice/Music/SoundCloud:/Music/SoundCloud/alice
+  - ~/.config/scdl:/root/.config/scdl
+```
+
+The timezone is set to `America/New_York` in the Dockerfile. To change it, update the `ENV TZ` line:
+```dockerfile
+ENV TZ=America/Los_Angeles
+```
+
+---
+
+### 4. Build and Run
+
+Once you have updated the Dockerfile and docker-compose.yml with your username and paths, build and start the container:
+
 ```bash
-brew install ffmpeg pipx
-pipx install scdl
+sudo docker compose up -d --build
 ```
-Update:
+
+The container will:
+1. Run an immediate download of your likes on startup.
+2. Stay running in the background and execute the nightly cron jobs automatically.
+
+To view logs:
 ```bash
-pipx upgrade scdl
+sudo docker logs -f soundcloud-downloader
 ```
 
-#### Install with PIP
-```
-pip3 install scdl
-```
-Update:
-```
-pip3 install scdl --upgrade
+To stop the container:
+```bash
+sudo docker compose down
 ```
 
-#### Install from the github repo
-```
-pip3 install git+https://github.com/flyingrub/scdl
-```
-Update:
-```
-pip3 install git+https://github.com/flyingrub/scdl --upgrade
-```
+---
 
+## Cron Schedule
 
-### Using OS Specific package manager
-#### Arch Linux
+The five cron jobs are baked into the image at build time. They run nightly at the times shown below (using the timezone set in the Dockerfile, defaulting to `America/New_York`):
 
 ```
-yay -S soundcloud-dl-git
+0  0 * * *  scdl -f -c ... -l https://soundcloud.com/<username> --path .../Likes
+30 0 * * *  scdl -p -c ... -l https://soundcloud.com/<username> --path .../Playlists
+0  1 * * *  scdl -r -c ... -l https://soundcloud.com/<username> --path .../Reposts
+30 1 * * *  scdl -t -c ... -l https://soundcloud.com/<username> --path .../Uploads
+0  2 * * *  scdl -C -c ... -l https://soundcloud.com/<username> --path .../Comments
 ```
 
-#### Gentoo
+---
 
-```
-layman -fa glicOne
-sudo emerge -av net-misc/scdl
-```
+## scdl Options Reference
 
-### Authentication
+The following options are provided by [scdl](https://github.com/flyingrub/scdl) (not this project). They can be used to customize the download commands in the Dockerfile.
 
-* Find your OAuth token by visiting SoundCloud after logging in and opening developer console (press F12) and going to the Storage tab. Then under cookies > soundcloud.com you can find the entry called oauth_token
-* Place OAuth token in the config file (see below)
-* You need to have this set to be able to use the `me` option
-* You need to have this set to download original files (which may be lossless) if they are available
-* If you have a GO+ account it will allow you to download some songs in 256 kbps AAC quality, and songs which are only available with GO+
-
-
-### Config file locations
-* Windows: `C:\Users\username\.config\scdl\scdl.cfg`
-* Mac/Linux: `~/.config/scdl/scdl.cfg`
-* If `XDG_CONFIG_HOME` is set: `$XDG_CONFIG_HOME/scdl/scdl.cfg`
-
-#### Your `scdl.cfg` should look at least like this:
-```scdl.cfg
-[DEFAULT]
-oauth_token=XXXXXXXXXXX
-```
-
-## Configuration
-There is a configuration file left in `~/.config/scdl/scdl.cfg`
-
-## Examples:
-```
-# Download track & repost of the user QUANTA
-scdl -l https://soundcloud.com/quanta-uk -a
-
-# Download likes of the user Blastoyz
-scdl -l https://soundcloud.com/kobiblastoyz -f
-
-# Download one track
-scdl -l https://soundcloud.com/jumpstreetpsy/low-extender
-
-# Download one playlist
-scdl -l https://soundcloud.com/pandadub/sets/the-lost-ship
-
-# Download only new tracks from a playlist
-scdl -l https://soundcloud.com/pandadub/sets/the-lost-ship --download-archive archive.txt -c
-
-# Sync playlist
-scdl -l https://soundcloud.com/pandadub/sets/the-lost-ship --sync archive.txt
-
-# Download your likes (with authentification token)
-scdl me -f
-```
-
-## Options:
 ```
 -h --help                       Show this screen
 --version                       Show version
@@ -172,21 +219,18 @@ scdl me -f
 --auth-token [token]            Specify the auth token to use
 --overwrite                     Overwrite file if it already exists
 --strict-playlist               Abort playlist downloading if one track fails to download
---add-description               Adds the description to a seperate txt file (can be read by some players)
+--add-description               Adds the description to a separate txt file (can be read by some players)
 --no-playlist                   Skip downloading playlists
 --opus                          Prefer downloading opus streams over mp3 streams
 --yt-dlp-args                   String with custom args to forward to yt-dlp
 ```
 
+For more examples and the full scdl documentation, visit the [scdl repository](https://github.com/flyingrub/scdl).
 
-## Features
-* Automatically detect the type of link provided
-* Download all songs from a user
-* Download all songs and reposts from a user
-* Download all songs from one playlist
-* Download all songs from all playlists from a user
-* Download all songs from a user's favorites
-* Download only new tracks from a list (playlist, favorites, etc.)
-* Sync Playlist
-* Set the tags with mutagen (Title / Artist / Album / Artwork)
-* Create playlist files when downloading a playlist
+---
+
+## Credits & Acknowledgements
+
+- **[scdl](https://github.com/flyingrub/scdl)** by [flyingrub](https://github.com/flyingrub) and contributors — the actual SoundCloud downloader tool that does all the heavy lifting. This Docker container would not exist without their work. Please ⭐ their repository!
+- **[xlindseyj/scdl](https://github.com/xlindseyj/scdl)** — personal fork of scdl.
+- This repository (`soundcloud-downloader`) was created by [xlindseyj](https://github.com/xlindseyj) as a convenient Docker wrapper and cron schedule that worked for my personal setup. It is not affiliated with or endorsed by the scdl project.
